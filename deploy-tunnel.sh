@@ -581,7 +581,7 @@ generate_encryption_key() {
         print_success "Using provided encryption key"
     fi
     
-    print_warning "⚠️  کلید رمزنگاری فقط یکبار نمایش داده می‌شود. آن را کپی کنید!"
+    print_warning "⚠️  Encryption key is displayed only once. Copy it!"
     echo -e "\n${CYAN}============================================${NC}"
     echo -e "${RED}  ENCRYPTION KEY (COPY THIS NOW!)${NC}"
     echo -e "${CYAN}============================================${NC}"
@@ -2240,16 +2240,16 @@ get_single_tunnel_input() {
         fi
         
         # Active Probing Protection: Get client IP
-        echo -e "\n${YELLOW}محافظت Active Probing:${NC}"
-        echo -e "  ${WHITE}IP سرور ایران را وارد کنید تا فقط این IP بتواند به سرور وصل شود.${NC}"
-        echo -e "  ${WHITE}اگر خالی بگذارید، همه IP ها اجازه اتصال دارند (کمتر امن).${NC}"
-        read -p "وارد کردن IP کلاینت ایران (اختیاری): " response
+        echo -e "\n${YELLOW}Active Probing Protection:${NC}"
+        echo -e "  ${WHITE}Enter Iran Server IP to allow only this IP to connect to the server.${NC}"
+        echo -e "  ${WHITE}If left empty, all IPs are allowed to connect (less secure).${NC}"
+        read -p "Enter Iran client IP (optional): " response
         if [ -n "$response" ]; then
             CLIENT_IP=$(echo "$response" | tr -d '[:space:]')
-            print_success "Active Probing Protection: فقط $CLIENT_IP اجازه اتصال دارد"
+            print_success "Active Probing Protection: Only $CLIENT_IP is allowed to connect"
         else
             CLIENT_IP=""
-            print_warning "Active Probing Protection: غیرفعال (همه IP ها مجازند)"
+            print_warning "Active Probing Protection: Disabled (all IPs allowed)"
         fi
         
         # Get KCP Configuration for server
@@ -2575,12 +2575,12 @@ get_multi_server_input() {
         
         # Active Probing Protection: Get client IP
         local client_ip=""
-        echo -e "\n${YELLOW}محافظت Active Probing برای '$tunnel_name':${NC}"
-        echo -e "  ${WHITE}IP سرور ایران مربوط به این کلاینت را وارد کنید.${NC}"
-        read -p "وارد کردن IP (اختیاری): " client_ip
+        echo -e "\n${YELLOW}Active Probing Protection for '$tunnel_name':${NC}"
+        echo -e "  ${WHITE}Enter Iran Server IP for this client.${NC}"
+        read -p "Enter IP (optional): " client_ip
         client_ip=$(echo "$client_ip" | tr -d '[:space:]')
         if [ -n "$client_ip" ]; then
-            print_success "Active Probing Protection: فقط $client_ip مجاز خواهد بود"
+            print_success "Active Probing Protection: Only $client_ip will be allowed"
         fi
         TUNNEL_CLIENT_IPS+=("$client_ip")
         
