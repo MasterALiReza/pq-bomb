@@ -139,7 +139,7 @@ is_script_paqet() {
     local path="$1"
     [ -f "$path" ] || return 1
     local first_line
-    first_line=$(head -n 1 "$path" 2>/dev/null)
+    first_line=$(head -n 1 "$path" 2>/dev/null | tr -d '\0')
     if [[ "$first_line" == "#!/bin/bash"* ]] && grep -q "Paqet Direct Tunnel Deployment Script" "$path" 2>/dev/null; then
         return 0
     fi
