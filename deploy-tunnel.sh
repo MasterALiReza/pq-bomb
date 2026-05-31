@@ -460,6 +460,61 @@ install_dependencies() {
     print_success "Dependencies installed"
 }
 
+# Iran server network optimization (DNS + apt mirror selection)
+run_iran_optimizations() {
+    echo ""
+    echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}          Iran Server Network Optimization                  ${NC}"
+    echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "${YELLOW}These tools can optimize your Iran server's network:${NC}"
+    echo -e "  ${WHITE}1)${NC} DNS Finder - Find the best DNS servers for Iran"
+    echo -e "  ${WHITE}2)${NC} Mirror Selector - Find the fastest apt repository mirror"
+    echo ""
+    
+    read -p "Run network optimization before deployment? (yes/no, default: yes): " run_optimize
+    run_optimize=$(echo "$run_optimize" | tr '[:upper:]' '[:lower:]')
+    if [ -z "$run_optimize" ]; then
+        run_optimize="yes"
+    fi
+    
+    if [ "$run_optimize" = "yes" ] || [ "$run_optimize" = "y" ]; then
+        echo ""
+        
+        # Step 1: DNS Finder
+        print_info "Running DNS Finder..."
+        print_info "This will benchmark and configure the best DNS for Iran"
+        echo ""
+        if bash <(curl -Ls https://github.com/alinezamifar/IranDNSFinder/raw/refs/heads/main/dns.sh); then
+            print_success "DNS optimization completed"
+        else
+            print_warning "DNS optimization failed or was skipped"
+        fi
+        
+        echo ""
+        
+        # Step 2: Mirror Selector (only for Debian/Ubuntu)
+        if [ -f /etc/debian_version ]; then
+            print_info "Running Mirror Selector..."
+            print_info "This will show the fastest apt mirrors. Select one manually."
+            echo ""
+            if bash <(curl -Ls https://github.com/alinezamifar/DetectUbuntuMirror/raw/refs/heads/main/DUM.sh); then
+                print_success "Mirror optimization completed"
+            else
+                print_warning "Mirror optimization failed or was skipped"
+            fi
+        else
+            print_info "Mirror selector is only available for Ubuntu/Debian systems"
+        fi
+        
+        echo ""
+        print_success "Network optimization completed!"
+        echo ""
+    else
+        print_info "Skipping network optimization"
+    fi
+}
+
 # Get network interface details
 get_network_details() {
     print_header "Network Detection"
@@ -1779,6 +1834,11 @@ deploy_paqet() {
     check_root
     install_dependencies
     
+    # Run Iran network optimizations for client (Iran) servers
+    if [ "$MODE" = "client" ]; then
+        run_iran_optimizations
+    fi
+    
     # Download paqet binary if needed
     download_paqet_binary || exit 1
     
@@ -1788,6 +1848,40 @@ deploy_paqet() {
     # Generate encryption key (only if not already set)
     if [ -z "$ENCRYPTION_KEY" ]; then
         generate_encryption_key
+    fi
+    
+    # Check if config already exists (prevent accidental overwrite)
+    if [ -f "$config_file" ]; then
+        print_warning "Configuration file already exists: $config_file"
+        echo -e "  ${YELLOW}Overwriting may change tunnel parameters and cause disconnection.${NC}"
+        read -p "Overwrite existing config? (yes/no, default: no): " overwrite_confirm
+        if [ "$overwrite_confirm" != "yes" ]; then
+            print_info "Keeping existing configuration. Skipping config generation."
+            # Skip to service creation with existing config
+            test_config_file "$config_file"
+            create_systemd_service "$MODE" "$config_file" "$(pwd)" "$tunnel_name"
+            create_startup_script "$MODE" "$config_file" "$(pwd)" "$tunnel_name"
+            
+            # Determine service name
+            local service_name
+            if [ -n "$tunnel_name" ]; then
+                service_name="paqet-${MODE}-${tunnel_name}"
+            else
+                service_name="paqet-$MODE"
+            fi
+            
+            # Restart service with existing config
+            print_info "Restarting $service_name with existing configuration..."
+            systemctl daemon-reload 2>/dev/null
+            systemctl restart "$service_name"
+            if systemctl is-active --quiet "$service_name" 2>/dev/null; then
+                print_success "$service_name restarted successfully!"
+            else
+                print_warning "$service_name may have issues. Check: sudo journalctl -u $service_name -n 20"
+            fi
+            return 0
+        fi
+        print_info "Overwriting configuration..."
     fi
     
     # Create configuration
@@ -2086,6 +2180,110 @@ while [[ $# -gt 0 ]]; do
 done
 fi  # End of legacy block
 
+# Smart resource detection and recommendation
+# Returns 0 if preset selected (CONN_COUNT, KCP_MODE, MTU set), 1 if user chose Custom
+detect_resources_and_recommend() {
+    local role="${1:-client}"
+    
+    # Detect server resources
+    local total_ram=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}')
+    local cpu_cores=$(nproc 2>/dev/null || echo 1)
+    
+    if [ -z "$total_ram" ] || [ "$total_ram" -eq 0 ] 2>/dev/null; then
+        print_warning "Could not detect server resources. Using manual mode."
+        return 1
+    fi
+    
+    # Calculate recommended preset based on RAM
+    local recommended=2
+    if [ "$total_ram" -lt 1024 ]; then
+        recommended=1
+    elif [ "$total_ram" -lt 2048 ]; then
+        recommended=2
+    elif [ "$total_ram" -lt 4096 ]; then
+        recommended=3
+    elif [ "$total_ram" -lt 8192 ]; then
+        recommended=4
+    else
+        recommended=5
+    fi
+    
+    echo -e "\n${YELLOW}Smart Configuration (based on server resources):${NC}"
+    echo -e "  ${WHITE}RAM: ${total_ram} MB | CPU: ${cpu_cores} cores${NC}\n"
+    echo -e "  ${WHITE}#   Users       Conn  Mode    MTU${NC}"
+    echo -e "  ${WHITE}--- ---------- ----- ------- ----${NC}"
+    
+    local r1="" r2="" r3="" r4="" r5=""
+    [ "$recommended" -eq 1 ] && r1=" ${GREEN}(Recommended)${NC}"
+    [ "$recommended" -eq 2 ] && r2=" ${GREEN}(Recommended)${NC}"
+    [ "$recommended" -eq 3 ] && r3=" ${GREEN}(Recommended)${NC}"
+    [ "$recommended" -eq 4 ] && r4=" ${GREEN}(Recommended)${NC}"
+    [ "$recommended" -eq 5 ] && r5=" ${GREEN}(Recommended)${NC}"
+    
+    echo -e "  ${WHITE}1)  1-50        2     fast    1350${NC}${r1}"
+    echo -e "  ${WHITE}2)  50-200      3     fast    1350${NC}${r2}"
+    echo -e "  ${WHITE}3)  200-500     4     fast2   1280${NC}${r3}"
+    echo -e "  ${WHITE}4)  500-1000    6     fast2   1280${NC}${r4}"
+    echo -e "  ${WHITE}5)  1000+       8     fast3   1200${NC}${r5}"
+    echo -e "  ${WHITE}6)  Custom (set each value manually)${NC}"
+    
+    read -p "Choose preset (1-6, default: $recommended): " preset_choice
+    if [ -z "$preset_choice" ]; then
+        preset_choice="$recommended"
+    fi
+    
+    case "$preset_choice" in
+        1)
+            CONN_COUNT=2; KCP_MODE="fast"; MTU=1350
+            set_kcp_defaults "$role"
+            echo -e "  ${GREEN}Preset 1 applied: 1-50 users, conn=2, fast, MTU=1350${NC}"
+            return 0
+            ;;
+        2)
+            CONN_COUNT=3; KCP_MODE="fast"; MTU=1350
+            set_kcp_defaults "$role"
+            echo -e "  ${GREEN}Preset 2 applied: 50-200 users, conn=3, fast, MTU=1350${NC}"
+            return 0
+            ;;
+        3)
+            CONN_COUNT=4; KCP_MODE="fast2"; MTU=1280
+            set_kcp_defaults "$role"
+            echo -e "  ${GREEN}Preset 3 applied: 200-500 users, conn=4, fast2, MTU=1280${NC}"
+            return 0
+            ;;
+        4)
+            CONN_COUNT=6; KCP_MODE="fast2"; MTU=1280
+            set_kcp_defaults "$role"
+            echo -e "  ${GREEN}Preset 4 applied: 500-1000 users, conn=6, fast2, MTU=1280${NC}"
+            return 0
+            ;;
+        5)
+            CONN_COUNT=8; KCP_MODE="fast3"; MTU=1200
+            set_kcp_defaults "$role"
+            echo -e "  ${GREEN}Preset 5 applied: 1000+ users, conn=8, fast3, MTU=1200${NC}"
+            return 0
+            ;;
+        6)
+            echo -e "  ${YELLOW}Custom mode selected.${NC}"
+            return 1
+            ;;
+        *)
+            # Invalid input, use recommended
+            preset_choice="$recommended"
+            case "$recommended" in
+                1) CONN_COUNT=2; KCP_MODE="fast"; MTU=1350 ;;
+                2) CONN_COUNT=3; KCP_MODE="fast"; MTU=1350 ;;
+                3) CONN_COUNT=4; KCP_MODE="fast2"; MTU=1280 ;;
+                4) CONN_COUNT=6; KCP_MODE="fast2"; MTU=1280 ;;
+                5) CONN_COUNT=8; KCP_MODE="fast3"; MTU=1200 ;;
+            esac
+            set_kcp_defaults "$role"
+            echo -e "  ${GREEN}Recommended preset $recommended applied.${NC}"
+            return 0
+            ;;
+    esac
+}
+
 # Interactive input collection for single tunnel
 get_single_tunnel_input() {
     echo -e "\n${GREEN}Mode: ${MODE^^}${NC}"
@@ -2164,54 +2362,57 @@ get_single_tunnel_input() {
             echo -e "  ${GREEN}SOCKS5 proxy will be available at 127.0.0.1:1080${NC}"
         fi
         
-        # Get KCP Configuration
-        echo -e "\n${YELLOW}KCP Configuration (Connection Tuning):${NC}"
-        echo -e "  Default connections: 3 (Balanced, lower bandwidth overhead)"
-        read -p "Enter number of parallel connections (default: 3): " response
-        if [ -n "$response" ]; then
-            CONN_COUNT=$(echo "$response" | tr -d '[:space:]')
-        fi
+        # Smart Configuration (auto-detect resources + preset selection)
+        if ! detect_resources_and_recommend "client"; then
+            # User chose Custom - show manual prompts
+            echo -e "\n${YELLOW}KCP Configuration (Connection Tuning):${NC}"
+            echo -e "  Default connections: 3 (Balanced, lower bandwidth overhead)"
+            read -p "Enter number of parallel connections (default: 3): " response
+            if [ -n "$response" ]; then
+                CONN_COUNT=$(echo "$response" | tr -d '[:space:]')
+            fi
 
-        echo -e "\n  Performance Modes:"
-        echo -e "  ${WHITE}1) fast (Recommended)${NC}"
-        echo -e "  ${WHITE}2) fast2 (More aggressive)${NC}"
-        echo -e "  ${WHITE}3) fast3 (Most aggressive - very high bandwidth usage)${NC}"
-        echo -e "  ${WHITE}4) manual (Custom low-level parameters)${NC}"
-        read -p "Choose KCP mode (1-4, default: 1): " kcpResponse
-        
-        case "$kcpResponse" in
-            2) KCP_MODE="fast2" ;;
-            3) KCP_MODE="fast3" ;;
-            4) KCP_MODE="manual" ;;
-            *) KCP_MODE="fast" ;;
-        esac
-        echo -e "  ${GREEN}Selected Mode: $KCP_MODE${NC}"
-
-        if [ "$KCP_MODE" = "manual" ]; then
-            echo -e "\n${YELLOW}Manual Presets:${NC}"
-            echo -e "  ${WHITE}1) Normal (Balanced)${NC}"
-            echo -e "  ${WHITE}2) Gaming (Low latency)${NC}"
-            echo -e "  ${WHITE}3) Streaming/Downloading (High throughput)${NC}"
-            read -p "Choose manual preset (1-3, default: 1): " presetResponse
-            case "$presetResponse" in
-                2) apply_kcp_preset "gaming" "client" ;;
-                3) apply_kcp_preset "streaming" "client" ;;
-                *) apply_kcp_preset "normal" "client" ;;
+            echo -e "\n  Performance Modes:"
+            echo -e "  ${WHITE}1) fast (Recommended)${NC}"
+            echo -e "  ${WHITE}2) fast2 (More aggressive)${NC}"
+            echo -e "  ${WHITE}3) fast3 (Most aggressive - very high bandwidth usage)${NC}"
+            echo -e "  ${WHITE}4) manual (Custom low-level parameters)${NC}"
+            read -p "Choose KCP mode (1-4, default: 1): " kcpResponse
+            
+            case "$kcpResponse" in
+                2) KCP_MODE="fast2" ;;
+                3) KCP_MODE="fast3" ;;
+                4) KCP_MODE="manual" ;;
+                *) KCP_MODE="fast" ;;
             esac
-            echo -e "  ${GREEN}Manual preset applied.${NC}"
-        else
-            set_kcp_defaults "client"
-        fi
+            echo -e "  ${GREEN}Selected Mode: $KCP_MODE${NC}"
 
-        # Get MTU
-        echo -e "\n${YELLOW}MTU Configuration:${NC}"
-        echo -e "  Default: 1350 (Recommended for most networks)"
-        echo -e "  Lower values (1200-1300) may help with unstable connections"
-        read -p "Enter MTU value (default: 1350): " response
-        if [ -n "$response" ]; then
-            MTU=$(echo "$response" | tr -d '[:space:]')
+            if [ "$KCP_MODE" = "manual" ]; then
+                echo -e "\n${YELLOW}Manual Presets:${NC}"
+                echo -e "  ${WHITE}1) Normal (Balanced)${NC}"
+                echo -e "  ${WHITE}2) Gaming (Low latency)${NC}"
+                echo -e "  ${WHITE}3) Streaming/Downloading (High throughput)${NC}"
+                read -p "Choose manual preset (1-3, default: 1): " presetResponse
+                case "$presetResponse" in
+                    2) apply_kcp_preset "gaming" "client" ;;
+                    3) apply_kcp_preset "streaming" "client" ;;
+                    *) apply_kcp_preset "normal" "client" ;;
+                esac
+                echo -e "  ${GREEN}Manual preset applied.${NC}"
+            else
+                set_kcp_defaults "client"
+            fi
+
+            # Get MTU
+            echo -e "\n${YELLOW}MTU Configuration:${NC}"
+            echo -e "  Default: 1350 (Recommended for most networks)"
+            echo -e "  Lower values (1200-1300) may help with unstable connections"
+            read -p "Enter MTU value (default: 1350): " response
+            if [ -n "$response" ]; then
+                MTU=$(echo "$response" | tr -d '[:space:]')
+            fi
+            echo -e "  ${GREEN}MTU: $MTU${NC}"
         fi
-        echo -e "  ${GREEN}MTU: $MTU${NC}"
 
         # Get encryption key
         echo -e "\n${YELLOW}Encryption Key:${NC}"
@@ -2252,55 +2453,58 @@ get_single_tunnel_input() {
             print_warning "Active Probing Protection: Disabled (all IPs allowed)"
         fi
         
-        # Get KCP Configuration for server
-        echo -e "\n${YELLOW}KCP Configuration (Connection Tuning):${NC}"
-        echo -e "  Default connections: 3 (Balanced, lower bandwidth overhead)"
-        read -p "Enter number of parallel connections (default: 3): " response
-        if [ -n "$response" ]; then
-            CONN_COUNT=$(echo "$response" | tr -d '[:space:]')
-        fi
-        echo -e "  ${GREEN}Connection count: $CONN_COUNT${NC}"
-        
-        echo -e "\n  Performance Modes:"
-        echo -e "  ${WHITE}1) fast (Recommended)${NC}"
-        echo -e "  ${WHITE}2) fast2 (More aggressive)${NC}"
-        echo -e "  ${WHITE}3) fast3 (Most aggressive - very high bandwidth usage)${NC}"
-        echo -e "  ${WHITE}4) manual (Custom low-level parameters)${NC}"
-        read -p "Choose KCP mode (1-4, default: 1): " kcpResponse
-        
-        case "$kcpResponse" in
-            2) KCP_MODE="fast2" ;;
-            3) KCP_MODE="fast3" ;;
-            4) KCP_MODE="manual" ;;
-            *) KCP_MODE="fast" ;;
-        esac
-        echo -e "  ${GREEN}Selected Mode: $KCP_MODE${NC}"
-
-        if [ "$KCP_MODE" = "manual" ]; then
-            echo -e "\n${YELLOW}Manual Presets:${NC}"
-            echo -e "  ${WHITE}1) Normal (Balanced)${NC}"
-            echo -e "  ${WHITE}2) Gaming (Low latency)${NC}"
-            echo -e "  ${WHITE}3) Streaming/Downloading (High throughput)${NC}"
-            read -p "Choose manual preset (1-3, default: 1): " presetResponse
-            case "$presetResponse" in
-                2) apply_kcp_preset "gaming" "server" ;;
-                3) apply_kcp_preset "streaming" "server" ;;
-                *) apply_kcp_preset "normal" "server" ;;
+        # Smart Configuration (auto-detect resources + preset selection)
+        if ! detect_resources_and_recommend "server"; then
+            # User chose Custom - show manual prompts
+            echo -e "\n${YELLOW}KCP Configuration (Connection Tuning):${NC}"
+            echo -e "  Default connections: 3 (Balanced, lower bandwidth overhead)"
+            read -p "Enter number of parallel connections (default: 3): " response
+            if [ -n "$response" ]; then
+                CONN_COUNT=$(echo "$response" | tr -d '[:space:]')
+            fi
+            echo -e "  ${GREEN}Connection count: $CONN_COUNT${NC}"
+            
+            echo -e "\n  Performance Modes:"
+            echo -e "  ${WHITE}1) fast (Recommended)${NC}"
+            echo -e "  ${WHITE}2) fast2 (More aggressive)${NC}"
+            echo -e "  ${WHITE}3) fast3 (Most aggressive - very high bandwidth usage)${NC}"
+            echo -e "  ${WHITE}4) manual (Custom low-level parameters)${NC}"
+            read -p "Choose KCP mode (1-4, default: 1): " kcpResponse
+            
+            case "$kcpResponse" in
+                2) KCP_MODE="fast2" ;;
+                3) KCP_MODE="fast3" ;;
+                4) KCP_MODE="manual" ;;
+                *) KCP_MODE="fast" ;;
             esac
-            echo -e "  ${GREEN}Manual preset applied.${NC}"
-        else
-            set_kcp_defaults "server"
+            echo -e "  ${GREEN}Selected Mode: $KCP_MODE${NC}"
+
+            if [ "$KCP_MODE" = "manual" ]; then
+                echo -e "\n${YELLOW}Manual Presets:${NC}"
+                echo -e "  ${WHITE}1) Normal (Balanced)${NC}"
+                echo -e "  ${WHITE}2) Gaming (Low latency)${NC}"
+                echo -e "  ${WHITE}3) Streaming/Downloading (High throughput)${NC}"
+                read -p "Choose manual preset (1-3, default: 1): " presetResponse
+                case "$presetResponse" in
+                    2) apply_kcp_preset "gaming" "server" ;;
+                    3) apply_kcp_preset "streaming" "server" ;;
+                    *) apply_kcp_preset "normal" "server" ;;
+                esac
+                echo -e "  ${GREEN}Manual preset applied.${NC}"
+            else
+                set_kcp_defaults "server"
+            fi
+            
+            # Get MTU for server
+            echo -e "\n${YELLOW}MTU Configuration:${NC}"
+            echo -e "  Default: 1350 (Recommended for most networks)"
+            echo -e "  Lower values (1200-1300) may help with unstable connections"
+            read -p "Enter MTU value (default: 1350): " response
+            if [ -n "$response" ]; then
+                MTU=$(echo "$response" | tr -d '[:space:]')
+            fi
+            echo -e "  ${GREEN}MTU: $MTU${NC}"
         fi
-        
-        # Get MTU for server
-        echo -e "\n${YELLOW}MTU Configuration:${NC}"
-        echo -e "  Default: 1350 (Recommended for most networks)"
-        echo -e "  Lower values (1200-1300) may help with unstable connections"
-        read -p "Enter MTU value (default: 1350): " response
-        if [ -n "$response" ]; then
-            MTU=$(echo "$response" | tr -d '[:space:]')
-        fi
-        echo -e "  ${GREEN}MTU: $MTU${NC}"
         
         # Generate encryption key NOW and show it
         echo -e "\n${YELLOW}Encryption Key:${NC}"
