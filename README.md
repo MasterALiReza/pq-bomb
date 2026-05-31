@@ -46,8 +46,8 @@ curl -fsSL https://raw.githubusercontent.com/MasterALiReza/pq-bomb/master/deploy
 
 ```
 Enter port mappings: 443=443, 8443=8443
-  ✓ Forward: :443 -> 87.120.106.55:443
-  ✓ Forward: :8443 -> 87.120.106.55:8443
+  ✓ Forward: :443 -> <Kharej_IP>:443
+  ✓ Forward: :8443 -> <Kharej_IP>:8443
 ```
 
 Now point your Xray inbound to `127.0.0.1:443`.
